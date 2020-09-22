@@ -507,6 +507,21 @@ class DefaultQuant(QuantizeHandler):
             quantizer.quantized_graph,
             node, quantizer.activation_post_process_map[node.name])
 
+class TraceableCustomModuleHandler(QuantizeHandler):
+    def convert(self, quantizer, node, load_arg, debug=False):
+        assert node.op == 'call_module'
+        if quantizer.is_dynamic_quant:
+            convert = torch.quantization.convert_dynamic_child_module_fx
+        else:
+            convert = torch.quantization.convert_child_module_fx
+        observed_custom_module = quantizer.modules[node.target]
+        quantized_custom_module = convert(observed_custom_module, debug=debug)
+        print('quantized:', quantized_custom_module)
+        parent_name, name = _parent_name(node.target)
+        setattr(quantizer.modules[parent_name], name, quantized_custom_module)
+        return quantizer.quantized_graph.node_copy(node, load_arg(quantized=None))
+
+
 # 2. Post Training Dynamic Quantizatoin Patterns
 @register_dynamic_quant_pattern(torch.nn.Linear)
 @register_dynamic_quant_pattern(torch.nn.functional.linear)

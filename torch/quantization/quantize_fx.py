@@ -20,13 +20,33 @@ def fuse_fx(graph_module, inplace=False):
     fuser = Fuser()
     return fuser.fuse(graph_module, inplace)
 
-def _prepare_fx(graph_module, qconfig_dict, inplace, is_dynamic_quant):
+def _prepare_fx(graph_module, qconfig_dict, inplace, is_dynamic_quant, is_child_module=False):
     _check_is_graph_module(graph_module)
     graph_module = fuse_fx(graph_module, inplace)
     quantizer = Quantizer()
     prepare = quantizer.prepare_dynamic if is_dynamic_quant else quantizer.prepare
-    prepared = prepare(graph_module, qconfig_dict, inplace=True)
-    return prepared
+    return prepare(graph_module, qconfig_dict, inplace=True, is_child_module=is_child_module)
+
+def prepare_child_module_fx(graph_module, qconfig_dict, inplace=False):
+    r""" Prepare a child module, so that it can be used when quantizing the
+    parent module. Used in custom module support
+
+    input of the module is quantized in parent module, output of the module
+    is quantized in the child module.
+    Returns:
+      model(GraphModule): prepared child module with following attributes:
+        _observed_input_idxs(List[Int]): a list of indexs for the graph inputs that
+                                         needs to be observed in parent module
+        _output_is_observed(Bool): a boolean variable indicate whether the output of the
+                                   custom module is observed or not
+
+    """
+    return _prepare_fx(graph_module, qconfig_dict, inplace, is_dynamic_quant=False, is_child_module=True)
+
+def prepare_dynamic_child_module_fx(graph_module, qconfig_dict, inplace=False):
+    r""" See :func:`~torch.quantization.prepare_child_module_fx`
+    """
+    return _prepare_fx(graph_module, qconfig_dict, inplace, is_dynamic_quant=True, is_child_module=True)
 
 def prepare_fx(graph_module, qconfig_dict, inplace=False):
     r""" Prepare a model for post training static quantization or
@@ -41,7 +61,8 @@ def prepare_fx(graph_module, qconfig_dict, inplace=False):
       A GraphModule with observer or fake quant modules, ready for
       calibration or quantization aware training
     """
-    return _prepare_fx(graph_module, qconfig_dict, inplace, is_dynamic_quant=False)
+    prepared = _prepare_fx(graph_module, qconfig_dict, inplace, is_dynamic_quant=False)
+    return prepared
 
 def prepare_static_fx(graph_module, qconfig_dict, inplace=False):
     assert not graph_module.training, 'prepare_static_fx only works for models in ' + \
@@ -66,12 +87,13 @@ def prepare_qat_fx(graph_module, qconfig_dict, inplace=False):
 def prepare_dynamic_fx(graph_module, qconfig_dict, inplace=False):
     r""" Prepare a model for post training dynamic quantization
     """
-    return _prepare_fx(graph_module, qconfig_dict, inplace, True)
+    prepared = _prepare_fx(graph_module, qconfig_dict, inplace, True)
+    return prepared
 
-def _convert_fx(graph_module, inplace, debug, is_dynamic_quant):
+def _convert_fx(graph_module, inplace, debug, is_dynamic_quant, is_child_module=False):
     _check_is_graph_module(graph_module)
     quantizer = Quantizer()
-    return quantizer.convert(graph_module, inplace, debug, is_dynamic_quant)
+    return quantizer.convert(graph_module, inplace, debug, is_dynamic_quant, is_child_module)
 
 def convert_fx(graph_module, inplace=False, debug=False):
     r""" Convert a calibrated or trained model to a quantized model
@@ -83,6 +105,24 @@ convert_qat_fx = convert_fx
 
 def convert_dynamic_fx(graph_module, inplace=False, debug=False):
     return _convert_fx(graph_module, inplace, debug, is_dynamic_quant=True)
+
+def convert_child_module_fx(graph_module, inplace=False, debug=False):
+    r""" Convert a model produced by :func:`~torch.quantization.prepare_child_module_fx`
+    and convert it to a quantized model
+
+    The inputs will be quantized by parent module, checks `_observed_input_idxs` of
+    input model and will treat these inputs as quantized
+    also will not dequantize the final output
+    Return:
+      A quantized child module which accepts quantized input(if needed)
+      and produces quantized output
+    """
+    return _convert_fx(graph_module, inplace, debug, is_dynamic_quant=False, is_child_module=True)
+
+def convert_dynamic_child_module_fx(graph_module, inplace=False, debug=False):
+    r""" See :func:`~torch.quantization.convert_child_module_fx`
+    """
+    return _convert_fx(graph_module, inplace, debug, is_dynamic_quant=True, is_child_module=True)
 
 def _quantize_fx(model, qconfig_dict, run_fn=None, run_args=None, inplace=False,
                  debug=False, is_dynamic_quant=False):
