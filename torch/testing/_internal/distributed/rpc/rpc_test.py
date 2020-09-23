@@ -72,6 +72,7 @@ EXPECTED_REMOTE_EVENTS = [
 VALUE_FUTURE = concurrent.futures.Future()
 DONE_FUTURE = concurrent.futures.Future()
 
+FIFTY_MIL_CYCLES = 50000000
 
 class StubRpcAgent:
     def __init__(self, world_size):
@@ -4292,3 +4293,67 @@ class TensorPipeAgentRpcTest(RpcAgentTestFixture):
         self.assertEqual(rref.to_here(), torch.ones(2).to(1))
 
         rpc.shutdown()
+
+    @staticmethod
+    def _slow_add_on_user_stream(x, y):
+        s0 = torch.cuda.current_stream(x.device)
+        s1 = torch.cuda.Stream(device=x.device)
+        with torch.cuda.stream(s1):
+            torch.cuda._sleep(10 * FIFTY_MIL_CYCLES)
+            z = x + y
+            event = torch.cuda.Event()
+            event.record(s1)
+        event.wait(s0)
+        return z
+
+    def _test_custom_stream(self, fn):
+        options = self.rpc_backend_options
+        dst = worker_name((self.rank + 1) % self.world_size)
+        options.set_device_map(dst, {"cuda:0": "cuda:1"})
+
+        rpc.init_rpc(
+            name=worker_name(self.rank),
+            backend=self.rpc_backend,
+            rank=self.rank,
+            world_size=self.world_size,
+            rpc_backend_options=options,
+        )
+
+        fn(dst)
+
+        rpc.shutdown()
+
+    def _test_stream_sync(self, dst):
+        if self.rank == 0:
+            x = torch.ones(2, 2).to(0)
+            ret = rpc.rpc_sync(
+                dst,
+                TensorPipeAgentRpcTest._slow_add_on_user_stream,
+                args=(x, x)
+            )
+            self.assertEqual(ret, 2 * x)
+
+    def _test_stream_multi_async(self, dst):
+        if self.rank == 0:
+            futs = []
+            for i in range(20):
+                x = torch.ones(2, 2).to(0) * i
+                futs.append(
+                    rpc.rpc_async(
+                        dst,
+                        TensorPipeAgentRpcTest._slow_add_on_user_stream,
+                        args=(x, x)
+                    )
+                )
+
+            for i in range(20):
+                self.assertEqual(futs[i].wait(), 2 * torch.ones(2, 2).to(0) * i)
+
+
+    @skip_if_lt_x_gpu(2)
+    def  test_custom_stream(self):
+        self._test_custom_stream(self._test_stream_sync)
+
+    @skip_if_lt_x_gpu(2)
+    def  test_custom_stream_multi(self):
+        self._test_custom_stream(self._test_stream_multi_async)
