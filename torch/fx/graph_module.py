@@ -132,8 +132,7 @@ class GraphModule(torch.nn.Module):
         """
         super().__init__()
         if isinstance(root, torch.nn.Module):
-            if hasattr(root, 'training'):
-                self.training = root.training
+            self.__dict__ = root.__dict__
             for node in graph.nodes:
                 if node.op in ['get_attr', 'call_module']:
                     assert isinstance(node.target, str)
